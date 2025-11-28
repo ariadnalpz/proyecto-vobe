@@ -6,8 +6,7 @@ on:
     branches: [ master ] # El pipeline se activa al hacer push a la rama master
 
 jobs:
-  # Eliminamos el job 'build-and-push' completamente.
-
+  # Solo un job: Construir y Desplegar en el VPS
   deploy:
     name: Build & Deploy Blue/Green on VPS
     runs-on: ubuntu-latest
@@ -20,25 +19,24 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           # Ejecutamos toda la lógica de Git, Docker y Nginx directamente en el VPS.
           script: |
-            # 1. Variables y Rutas (usando 'tr -d \r' por si acaso)
+            # 1. Variables y Rutas
             APP_DIR="/home/deployer/ari" 
-            REPO_LOWER=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]' | tr -d '\r')
             
             # 2. Preparación del Código: Clonar o Pull
-            if [ -d "$APP_DIR/app_source" ]; then
+            # Creamos el directorio de la fuente si no existe
+            mkdir -p $APP_DIR/app_source
+            
+            if [ -d "$APP_DIR/app_source/.git" ]; then
                 echo "Haciendo git pull en la fuente existente..."
                 cd $APP_DIR/app_source
                 git pull origin master
             else
                 echo "Clonando el repositorio por primera vez..."
-                # Nota: Necesitarás que la llave SSH_PRIVATE_KEY esté también configurada 
-                # en el servidor para acceder a repositorios privados si lo necesitas.
-                mkdir -p $APP_DIR/app_source
                 git clone https://github.com/${{ github.repository }} $APP_DIR/app_source
                 cd $APP_DIR/app_source
             fi
             
-            # 3. Determinar el slot inactivo
+            # 3. Determinar el slot inactivo (Sanitizando la salida de cat con tr -d '\r')
             CURRENT_PRODUCTION=$(cat $APP_DIR/.env 2>/dev/null | grep CURRENT_PRODUCTION | cut -d'=' -f2 | tr -d '\r')
             if [ -z "$CURRENT_PRODUCTION" ] || [ "$CURRENT_PRODUCTION" == "ari-blue" ]; then
                 INACTIVE_SLOT="ari-green"
@@ -55,7 +53,7 @@ jobs:
             
             # 4. Construir la imagen Docker en el VPS
             echo "Construyendo nueva imagen localmente..."
-            # Usamos el nombre del slot inactivo como tag local
+            # El contexto de build es el directorio actual ($APP_DIR/app_source)
             docker build -t local-build:$INACTIVE_SLOT .
             
             # 5. Detener y Limpiar el Contenedor Antiguo
@@ -63,19 +61,14 @@ jobs:
             docker stop $INACTIVE_SLOT 2>/dev/null || true 
             docker rm $INACTIVE_SLOT 2>/dev/null || true
 
-            # 6. Iniciar nuevo contenedor
+            # 6. Iniciar nuevo contenedor (CRÍTICO: TODO EN UNA SOLA LÍNEA)
             echo "Iniciando nuevo contenedor $INACTIVE_SLOT en puerto $INACTIVE_PORT"
-            docker run -d \
-                --name $INACTIVE_SLOT \
-                -p $INACTIVE_PORT:4000 \ 
-                -e APP_COLOR=$INACTIVE_SLOT \ 
-                --restart unless-stopped \
-                local-build:$INACTIVE_SLOT
+            docker run -d --name $INACTIVE_SLOT -p $INACTIVE_PORT:4000 -e APP_COLOR=$INACTIVE_SLOT --restart unless-stopped local-build:$INACTIVE_SLOT
             
             echo "Esperando 10 segundos para que el contenedor inicie..."
             sleep 10
             
-            # 7. Swap de Nginx
+            # 7. Swap de Nginx (Requiere NOPASSWD configurado)
             echo "Realizando swap de Nginx a $INACTIVE_SLOT"
             sudo ln -snf "$INACTIVE_CONF" "/etc/nginx/current_upstream.conf" 
             sudo systemctl reload nginx 
