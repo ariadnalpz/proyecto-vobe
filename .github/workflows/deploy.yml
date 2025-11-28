@@ -37,7 +37,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.REPO_LOWER }}:latest
-            ghcr.io/${{ env.REPO_LOWER }}:${{ github.sha }} # Tag con el hash de commit
+            ghcr.io/${{ env.REPO_LOWER }}:${{ github.sha }}
 
   deploy:
     name: Deploy Blue/Green to VPS
